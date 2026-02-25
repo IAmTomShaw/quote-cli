@@ -25,7 +25,9 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@github/copilot-sdk": "^0.1.18",
-    "axios": "^1.13.3"
+    "axios": "^1.13.3",
+    "openai": "^6.22.0"
   }
 }

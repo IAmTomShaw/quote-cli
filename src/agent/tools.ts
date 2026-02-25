@@ -56,129 +56,148 @@ function extractNotionTextContent(notionResponse: any): string {
   return textParts.join("").trim();
 }
 
+export async function fetchPricingFromNotion(): Promise<string> {
+  if (DEBUG_MODE) {
+    console.log('[fetchPricingFromNotion] invoked');
+  }
+
+  const { notionApiKey, notionPageId } = await resolveSettings();
+  
+  if (!notionPageId || !notionApiKey) {
+    const msg = "Notion credentials are not configured.";
+    if (DEBUG_MODE) console.warn("[fetchPricingFromNotion]", msg);
+    throw new Error(msg);
+  }
+
+  const apiUrl = `https://api.notion.com/v1/blocks/${notionPageId}/children`;
+  const headers = {
+    Authorization: `Bearer ${notionApiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+
+  try {
+    if (DEBUG_MODE) {
+      console.log(`[fetchPricingFromNotion] fetching Notion blocks for page ${notionPageId}`);
+    }
+    const resp = await axios.get(apiUrl, { headers });
+    if (DEBUG_MODE) {
+      console.log(`[fetchPricingFromNotion] response status ${resp.status}`);
+    }
+    return extractNotionTextContent(resp.data);
+  } catch (error) {
+    if (DEBUG_MODE) {
+      const status = axios.isAxiosError(error) && error.response ? error.response.status : "n/a";
+      const body = axios.isAxiosError(error) && error.response ? JSON.stringify(error.response.data) : String(error);
+      console.error("[fetchPricingFromNotion] error fetching Notion data:", status, body);
+    }
+    throw error;
+  }
+}
+
+export async function convertCurrency(amount: number, fromCurrency: string, toCurrency: string): Promise<string> {
+  if (DEBUG_MODE) {
+    console.log(`[convertCurrency] invoked with amount: ${amount}, from: ${fromCurrency}, to: ${toCurrency}`);
+  }
+
+  const { exchangeRateApiKey } = await resolveSettings();
+  
+  if (!exchangeRateApiKey) {
+    const msg = "EXCHANGE_RATE_API_KEY is not configured.";
+    if (DEBUG_MODE) console.warn("[convertCurrency]", msg);
+    throw new Error(msg);
+  }
+
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  const apiUrl = `https://v6.exchangerate-api.com/v6/${exchangeRateApiKey}/pair/${from}/${to}`;
+  
+  try {
+    const resp = await axios.get(apiUrl);
+    const data = resp.data;
+
+    if (!data || data.result !== "success" || typeof data.conversion_rate !== "number") {
+      throw new Error(`Exchange rate API error: ${JSON.stringify(data)}`);
+    }
+
+    const convertedAmount = amount * data.conversion_rate;
+    
+    if (DEBUG_MODE) {
+      console.log(`[convertCurrency] conversion successful: ${convertedAmount}`);
+    }
+    
+    return `Converted amount: ${convertedAmount.toFixed(2)} ${to}`;
+  } catch (error) {
+    if (DEBUG_MODE) {
+      console.error("[convertCurrency] error fetching exchange rate data:", error);
+    }
+    throw error;
+  }
+}
+
+// --- COPILOT SDK TOOLS ---
+
 export const servicePricingLookupTool = defineTool("servicePricingLookupTool", {
   description: "Retreive the service pricing list from Notion in the form of plain text.",
-  parameters: {
-    type: "object",
-    properties: {},
-    required: [],
-  },
-  handler: async (args): Promise<ToolResultObject> => {
-
-    if (DEBUG_MODE) {
-      console.log('[servicePricingLookupTool] invoked with args:', args);
-    }
-
-    const { notionApiKey: NOTION_API_KEY, notionPageId: NOTION_PAGE_ID } = await resolveSettings();
-
-    if (!NOTION_PAGE_ID || !NOTION_API_KEY) {
-      const msg = "Notion credentials (NOTION_PAGE_ID / NOTION_API_KEY) are not configured in the environment.";
-      if (DEBUG_MODE) {
-        console.warn("[servicePricingLookupTool]", msg);
-      }
-      return { textResultForLlm: msg, resultType: "failure" };
-    }
-
-    const apiUrl = `https://api.notion.com/v1/blocks/${NOTION_PAGE_ID}/children`;
-    const headers = {
-      Authorization: `Bearer ${NOTION_API_KEY}`,
-      "Content-Type": "application/json",
-      "Notion-Version": "2022-06-28",
-    };
-
+  parameters: { type: "object", properties: {}, required: [] },
+  handler: async (): Promise<ToolResultObject> => {
     try {
-      if (DEBUG_MODE) {
-        console.log(`[servicePricingLookupTool] fetching Notion blocks for page ${NOTION_PAGE_ID}`);
-      }
-      const resp = await axios.get(apiUrl, { headers });
-      if (DEBUG_MODE) {
-        console.log(`[servicePricingLookupTool] response status ${resp.status}`);
-      }
-      const data = resp.data;
-
-      // Extract clean text content from the Notion response
-      const textContent = extractNotionTextContent(data);
-
+      const textContent = await fetchPricingFromNotion();
       return {
         textResultForLlm: `Tom Shaw's Pricing Information:\n\n${textContent}`,
         resultType: "success",
       };
     } catch (error) {
-      const status = axios.isAxiosError(error) && error.response ? error.response.status : "n/a";
-      const body = axios.isAxiosError(error) && error.response ? JSON.stringify(error.response.data) : String(error);
-      if (DEBUG_MODE) {
-        console.error("[servicePricingLookupTool] error fetching Notion data:", status, body);
-      }
-      return {
-        textResultForLlm: `Failed to fetch pricing data from Notion: ${status} - ${body}`,
-        resultType: "failure",
-      };
+      return { textResultForLlm: String(error), resultType: "failure" };
     }
   },
 });
 
-export const currencyConversionTool = defineTool<{
-  amount: number;
-  fromCurrency: string;
-  toCurrency: string;
-}>("convert_currency", {
+export const currencyConversionTool = defineTool<{amount: number; fromCurrency: string; toCurrency: string;}>("convert_currency", {
   description: "Convert an amount from one currency to another.",
   parameters: {
     type: "object",
     properties: {
-      amount: {
-        type: "number",
-        description: "The amount of money to convert.",
-      },
-      fromCurrency: {
-        type: "string",
-        description: "The currency code to convert from (e.g., USD).",
-      },
-      toCurrency: {
-        type: "string",
-        description: "The currency code to convert to (e.g., EUR).",
-      },
+      amount: { type: "number", description: "The amount of money to convert." },
+      fromCurrency: { type: "string", description: "The currency code to convert from (e.g., USD)." },
+      toCurrency: { type: "string", description: "The currency code to convert to (e.g., EUR)." },
     },
     required: ["amount", "fromCurrency", "toCurrency"],
   },
   handler: async (args): Promise<ToolResultObject> => {
-    const { amount, fromCurrency, toCurrency } = args;
-    const { exchangeRateApiKey } = await resolveSettings();
-
-    if (!exchangeRateApiKey) {
-      return {
-        textResultForLlm:
-          "EXCHANGE_RATE_API_KEY is not configured. Run /settings to add it.",
-        resultType: "failure",
-      };
-    }
-
-    const from = fromCurrency.toUpperCase();
-    const to = toCurrency.toUpperCase();
-
     try {
-      const apiUrl = `https://v6.exchangerate-api.com/v6/${exchangeRateApiKey}/pair/${from}/${to}`;
-      const resp = await axios.get(apiUrl);
-      const data = resp.data;
-
-      if (!data || data.result !== "success" || typeof data.conversion_rate !== "number") {
-        return {
-          textResultForLlm: `Exchange rate API error: ${JSON.stringify(data)}`,
-          resultType: "failure",
-        };
-      }
-
-      const convertedAmount = amount * data.conversion_rate;
-
-      return {
-        textResultForLlm: `Converted amount: ${convertedAmount.toFixed(2)} ${to}`,
-        resultType: "success",
-      };
+      const result = await convertCurrency(args.amount, args.fromCurrency, args.toCurrency);
+      return { textResultForLlm: result, resultType: "success" };
     } catch (error) {
-      return {
-        textResultForLlm: `Error during currency conversion: ${String(error)}`,
-        resultType: "failure",
-      };
+      return { textResultForLlm: String(error), resultType: "failure" };
     }
   },
 });
+
+// ---  OPENAI TOOLS ---
+
+export const openaiToolsDefinitions: import("openai").OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "servicePricingLookupTool",
+      description: "Retreive the service pricing list from Notion in the form of plain text.",
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "convert_currency",
+      description: "Convert an amount from one currency to another.",
+      parameters: {
+        type: "object",
+        properties: {
+          amount: { type: "number", description: "The amount of money to convert." },
+          fromCurrency: { type: "string", description: "The currency code to convert from (e.g., USD)." },
+          toCurrency: { type: "string", description: "The currency code to convert to (e.g., EUR)." },
+        },
+        required: ["amount", "fromCurrency", "toCurrency"],
+      }
+    }
+  }
+];
